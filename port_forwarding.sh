@@ -84,11 +84,18 @@ fi
 if [[ -z $PAYLOAD_AND_SIGNATURE ]]; then
   echo
   echo -n "Getting new signature... "
-  payload_and_signature="$(curl -s -m 5 \
-    --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
-    --cacert "ca.rsa.4096.crt" \
-    -G --data-urlencode "token=${PIA_TOKEN}" \
-    "https://${PF_HOSTNAME}:19999/getSignature")"
+  curl_cmd="curl  -s -m 5 \
+    --connect-to \"$PF_HOSTNAME::$PF_GATEWAY:\" \
+    --cacert \"ca.rsa.4096.crt\" \
+    -G --data-urlencode \"token=${PIA_TOKEN}\" \
+    \"https://${PF_HOSTNAME}:19999/getSignature\""
+
+  if [ "$CREATE_NETNS" == true ]; then
+    # Run curl from the network namespace pia_ns
+    curl_cmd="ip netns exec pia_ns ${curl_cmd}"
+  fi
+
+  payload_and_signature="$(eval "$curl_cmd")"
 else
   payload_and_signature=$PAYLOAD_AND_SIGNATURE
   echo -n "Checking the payload_and_signature from the env var... "
@@ -130,13 +137,23 @@ Trying to bind the port... "
 # We will repeat this request every 15 minutes, in order to keep the port
 # alive. The servers have no mechanism to track your activity, so they
 # will just delete the port forwarding if you don't send keepalives.
+curl_cmd="curl -Gs -m 5 \
+    --connect-to \"$PF_HOSTNAME::$PF_GATEWAY:\" \
+    --cacert \"ca.rsa.4096.crt\" \
+    --data-urlencode \"payload=${payload}\" \
+    --data-urlencode \"signature=${signature}\" \
+    \"https://${PF_HOSTNAME}:19999/bindPort\""
+if [ "$CREATE_NETNS" == true ]; then
+  # Run curl from the network namespace pia_ns
+  curl_cmd="ip netns exec pia_ns ${curl_cmd}"
+fi
+
+export PIA_PORT=$port
+# Run POST_PF_SCRIPT
+$POST_PF_SCRIPT
+
 while true; do
-  bind_port_response="$(curl -Gs -m 5 \
-    --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
-    --cacert "ca.rsa.4096.crt" \
-    --data-urlencode "payload=${payload}" \
-    --data-urlencode "signature=${signature}" \
-    "https://${PF_HOSTNAME}:19999/bindPort")"
+    bind_port_response="$(eval "$curl_cmd")"
     echo -e "${green}OK!${nc}"
 
     # If port did not bind, just exit the script.

@@ -149,11 +149,21 @@ if [[ $PIA_DNS == "true" ]]; then
   echo
   dnsSettingForVPN="DNS = $dnsServer"
 fi
+
+# If a network namespace should be created, wg-quick will not be used
+# Hence the wg-quick parameters Address and DNS must not be included in config
+peerIp="$(echo "$wireguard_json" | jq -r '.peer_ip')"
+addrSettingForVPN="Address = $peerIp"
+if [ "$CREATE_NETNS" == true ]; then
+  dnsSettingForVPN=""
+  addrSettingForVPN=""
+fi
+
 echo -n "Trying to write ${PIA_CONF_PATH}..."
 mkdir -p "$(dirname "$PIA_CONF_PATH")"
 echo "
 [Interface]
-Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
+$addrSettingForVPN
 PrivateKey = $privKey
 $dnsSettingForVPN
 [Peer]
@@ -171,18 +181,50 @@ if [[ $PIA_CONNECT == "true" ]]; then
   # If you get DNS errors because you miss some packages,
   # just hardcode /etc/resolv.conf to "nameserver 10.0.0.242".
   echo
-  echo "Trying to create the wireguard interface..."
-  wg-quick up pia || exit 1
-  echo
-  echo -e "${green}The WireGuard interface got created.${nc}
 
-  At this point, internet should work via VPN.
+  # Do not use wg-quick if tunnel should be created in a seperate netns
+  if [ "$CREATE_NETNS" == false ]; then
+    echo "Trying to create the wireguard interface..."
+    wg-quick up pia || exit 1
+    echo
+    echo -e "${green}The WireGuard interface got created.${nc}
 
-  To disconnect the VPN, run:
+    At this point, internet should work via VPN.
 
-  --> ${green}wg-quick down pia${nc} <--
-  "
+    To disconnect the VPN, run:
 
+    --> ${green}wg-quick down pia${nc} <--
+    "
+  else
+    # Create a Wireguard network interface in the default namespace.
+    sudo ip link add pia type wireguard
+    # Load the Wireguard configuration.
+    sudo wg setconf pia /etc/wireguard/pia.conf
+    # Create a new network namespace.
+    sudo ip netns add pia_ns
+    # Move the Wireguard interface to the network namespace.
+    sudo ip link set pia netns pia_ns
+    # Set the IP address of the Wireguard interface.
+    sudo ip -n pia_ns addr add $peerIp/32 dev pia
+    # Bring up the Wireguard interface.
+    sudo ip -n pia_ns link set pia up
+    # Make the Wireguard interface the default route.
+    sudo ip -n pia_ns route add default dev pia
+
+    echo "The WireGuard interface got created and moved to
+    the network namespace pia_ns
+    At this point, the network namespace pia_ns should
+    be connected to the internet via VPN.
+
+    To run a command inside the network namespace via the VPN, run:
+    --> ${green}sudo ip netns exec pia_ns <cmd>${nc}
+
+    To disconnect the VPN, run:
+    --> ${green}sudo ip -n pia_ns link set pia down${nc}
+
+    To delete the network namespace, run:
+    --> ${green}sudo ip netns del pia_ns${nc}"
+  fi
   # This section will stop the script if PIA_PF is not set to "true".
   if [[ $PIA_PF != "true" ]]; then
     echo "If you want to also enable port forwarding, you can start the script:"
